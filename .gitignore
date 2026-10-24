@@ -1,0 +1,7 @@
+.env
+for_tutor/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.vscode/settings.json

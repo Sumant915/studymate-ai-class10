@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="StudyMate AI helps Class 10 students explore their textbooks with grounded answers."
+    >
+    <title>StudyMate AI | Class 10 Tutor</title>
+    <link rel="stylesheet" href="style.css">
+    <script
+      src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"
+      integrity="sha384-H+hy9ULve6xfxRkWIh/YOtvDdpXgV2fmAGQkIDTxIgZwNoaoBal14Di2YTMR6MzR"
+      crossorigin="anonymous"
+      async
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"
+      integrity="sha384-eEu5CTj3qGvu9PdJuS+YlkNi7d2XxQROAFYOr59zgObtlcux1ae1Il3u7jvdCSWu"
+      crossorigin="anonymous"
+      async
+    ></script>
+    <script src="script.js" defer></script>
+  </head>
+  <body>
+    <div class="app-layout" id="app-layout">
+      <aside class="sidebar" id="sidebar" aria-label="Main navigation">
+        <a class="brand" href="#" aria-label="StudyMate AI home">
+          <span class="brand-mark" aria-hidden="true">S.</span>
+          <span class="brand-name">StudyMate <span>AI</span></span>
+        </a>
+
+        <button class="new-chat-button" id="new-chat-button" type="button">
+          <span class="icon" aria-hidden="true">+</span>
+          <span>New conversation</span>
+          <span class="shortcut" aria-hidden="true">Ctrl K</span>
+        </button>
+
+        <nav class="sidebar-nav" aria-label="Study tools">
+          <p class="nav-label">Study desk</p>
+          <button class="nav-item" id="chapters-nav" type="button" aria-controls="chapters-panel">
+            <span class="nav-icon" aria-hidden="true">01</span>
+            <span>Chapters</span>
+          </button>
+          <button class="nav-item" id="quiz-nav" type="button" aria-controls="quiz-panel">
+            <span class="nav-icon" aria-hidden="true">02</span>
+            <span>Practice quiz</span>
+          </button>
+
+          <p class="nav-label recent-label">Your library</p>
+          <button class="nav-item" id="recent-nav" type="button" aria-controls="recent-panel">
+            <span class="nav-icon" aria-hidden="true">03</span>
+            <span>Recent chats</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-context">
+          <span class="context-label">Current subject</span>
+          <div class="sidebar-subject">
+            <span class="subject-mark" aria-hidden="true"></span>
+            <span id="sidebar-subject-label">Class 10 Science</span>
+          </div>
+        </div>
+      </aside>
+
+      <button class="sidebar-backdrop" id="sidebar-backdrop" type="button" aria-label="Close navigation"></button>
+
+      <main class="main-panel">
+        <header class="topbar">
+          <button
+            class="icon-button sidebar-toggle"
+            id="sidebar-toggle"
+            type="button"
+            aria-label="Collapse navigation"
+            aria-controls="sidebar"
+            aria-expanded="true"
+          >
+            <span aria-hidden="true">☰</span>
+          </button>
+          <div class="subject-breadcrumb">
+            <span class="breadcrumb-muted">STUDY DESK</span>
+            <span class="breadcrumb-divider" aria-hidden="true">—</span>
+            <span id="subject-breadcrumb-label">Class 10 Science</span>
+            <label class="visually-hidden" for="subject-select">Choose subject</label>
+            <select class="subject-select" id="subject-select" aria-label="Choose subject">
+              <option value="Science">Science</option>
+              <option value="Maths">Maths</option>
+              <option value="English">English</option>
+              <option value="Social_Science">Social Science</option>
+            </select>
+          </div>
+          <span class="topbar-status"><span></span> AI tutor ready</span>
+        </header>
+
+        <section class="chat-viewport" id="chat-scroll" aria-label="Class 10 tutor chat">
+          <div class="welcome-screen" id="welcome-screen">
+            <p class="welcome-eyebrow" id="welcome-eyebrow">CLASS 10 / SCIENCE</p>
+            <h1 id="welcome-title">Learn the logic.<br>Keep the wonder.</h1>
+            <p class="welcome-copy" id="welcome-copy">
+              A thoughtful place to work through your Science textbook. Ask a
+              question and follow the explanation back to its source.
+            </p>
+
+            <div class="suggestion-heading" id="suggestion-heading">
+              <span>Begin with a question</span>
+              <span class="suggestion-hint">SELECT TO EDIT</span>
+            </div>
+            <div class="suggestion-grid" id="suggestion-grid">
+              <button class="suggestion-card" type="button">
+                <span class="suggestion-number" aria-hidden="true">09</span>
+                <span><strong>Light – Reflection and Refraction</strong><small>Why does the sky appear blue?</small></span>
+                <span class="suggestion-arrow" aria-hidden="true">↗</span>
+              </button>
+              <button class="suggestion-card" type="button">
+                <span class="suggestion-number" aria-hidden="true">05</span>
+                <span><strong>Life Processes</strong><small>How does the human heart pump blood through the body?</small></span>
+                <span class="suggestion-arrow" aria-hidden="true">↗</span>
+              </button>
+              <button class="suggestion-card" type="button">
+                <span class="suggestion-number" aria-hidden="true">02</span>
+                <span><strong>Acids, Bases and Salts</strong><small>What is the difference between acids and bases?</small></span>
+                <span class="suggestion-arrow" aria-hidden="true">↗</span>
+              </button>
+              <button class="suggestion-card" type="button">
+                <span class="suggestion-number" aria-hidden="true">11</span>
+                <span><strong>Electricity</strong><small>Explain the process of electricity generation in a generator.</small></span>
+                <span class="suggestion-arrow" aria-hidden="true">↗</span>
+              </button>
+            </div>
+            <p class="empty-state" id="suggestion-empty" role="status" hidden>
+              Suggested questions are not available for this subject yet. Ask any question about the selected textbook.
+            </p>
+
+            <footer class="developer-footer" aria-label="About the developer">
+              <div class="developer-details">
+                <p class="developer-label">Made by</p>
+                <h2 class="developer-name">Sumantra Singh</h2>
+                <p class="developer-education">B.Tech in Artificial Intelligence &amp; Machine Learning (AIML)</p>
+                <p class="developer-bio">B.Tech AIML student interested in Machine Learning and AI-powered applications.</p>
+              </div>
+              <nav class="developer-links" aria-label="Developer profiles">
+                <a href="https://github.com/Sumant915" target="_blank" rel="noopener noreferrer">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path fill="currentColor" d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.55.1.76-.24.76-.53v-2.08c-3.1.67-3.76-1.32-3.76-1.32-.5-1.28-1.23-1.62-1.23-1.62-1.01-.69.08-.68.08-.68 1.12.08 1.7 1.15 1.7 1.15.99 1.7 2.59 1.21 3.22.93.1-.72.39-1.21.7-1.49-2.47-.28-5.07-1.24-5.07-5.5 0-1.22.44-2.22 1.15-3-.12-.28-.5-1.42.11-2.96 0 0 .94-.3 3.05 1.15a10.6 10.6 0 0 1 5.55 0c2.12-1.44 3.05-1.15 3.05-1.15.61 1.54.23 2.68.11 2.96.72.78 1.15 1.78 1.15 3.01 0 4.27-2.61 5.21-5.09 5.49.4.35.75 1.02.75 2.06V22c0 .29.2.63.77.52A11.1 11.1 0 0 0 12 .9Z"/>
+                  </svg>
+                  <span>GitHub</span>
+                  <span class="visually-hidden">(opens in a new tab)</span>
+                </a>
+                <a href="https://www.linkedin.com/in/sumantra-singh-a85956317/" target="_blank" rel="noopener noreferrer">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path fill="currentColor" d="M20.45 2H3.55C2.69 2 2 2.68 2 3.52v16.96c0 .84.69 1.52 1.55 1.52h16.9c.86 0 1.55-.68 1.55-1.52V3.52c0-.84-.69-1.52-1.55-1.52ZM7.93 18.9H4.97V9.37h2.96v9.53ZM6.45 8.07a1.72 1.72 0 1 1 .02-3.44 1.72 1.72 0 0 1-.02 3.44Zm12.48 10.83h-2.96v-4.64c0-1.11-.02-2.54-1.55-2.54-1.55 0-1.79 1.21-1.79 2.46v4.72H9.67V9.37h2.84v1.3h.04c.4-.75 1.36-1.55 2.8-1.55 3 0 3.58 1.98 3.58 4.55v5.23Z"/>
+                  </svg>
+                  <span>LinkedIn</span>
+                  <span class="visually-hidden">(opens in a new tab)</span>
+                </a>
+              </nav>
+            </footer>
+          </div>
+
+          <div class="conversation" id="conversation" role="log" aria-live="polite" aria-relevant="additions"></div>
+        </section>
+
+        <div class="workspace-viewport" id="workspace-viewport" hidden>
+          <section class="workspace-panel" id="chapters-panel" aria-labelledby="chapters-title" hidden>
+            <div class="workspace-content">
+              <div class="workspace-heading">
+                <button class="back-to-chat" type="button" data-return-chat>← Back to chat</button>
+                <p class="welcome-eyebrow">TEXTBOOK LIBRARY</p>
+                <h1 id="chapters-title">Science chapters</h1>
+                <p class="workspace-description" id="chapters-description">
+                  These titles are taken from the available textbook PDFs. Choosing a chapter marks your study focus only; questions still search the full index.
+                </p>
+              </div>
+              <div class="chapter-grid" id="chapter-list"></div>
+              <p class="workspace-footnote" id="selected-chapter">
+                No chapter selected. Chapter selection does not filter tutor retrieval.
+              </p>
+              <p class="workspace-footnote" id="chapter-availability-note">
+                Chapter 8 is not listed because no matching chapter PDF was found in the current folder.
+              </p>
+            </div>
+          </section>
+
+          <section class="workspace-panel" id="quiz-panel" aria-labelledby="quiz-title" hidden>
+            <div class="workspace-content">
+              <div class="workspace-heading">
+                <button class="back-to-chat" type="button" data-return-chat>← Back to chat</button>
+                <p class="welcome-eyebrow">PRACTICE</p>
+                <h1 id="quiz-title">Practice quiz</h1>
+                <p class="workspace-description">
+                  Textbook-grounded quiz generation is not connected yet. No quiz is generated on this page.
+                </p>
+              </div>
+              <div class="setup-card">
+                <span class="setup-icon" aria-hidden="true">✓</span>
+                <div>
+                  <h2>Quiz generation needs backend support</h2>
+                  <p>
+                    A future backend endpoint can accept a chapter or topic and question count, retrieve relevant textbook passages, and return validated questions with answers and source metadata.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="workspace-panel" id="recent-panel" aria-labelledby="recent-title" hidden>
+            <div class="workspace-content">
+              <div class="workspace-heading recent-heading">
+                <div>
+                  <button class="back-to-chat" type="button" data-return-chat>← Back to chat</button>
+                  <p class="welcome-eyebrow">THIS BROWSER</p>
+                  <h1 id="recent-title">Recent chats</h1>
+                  <p class="workspace-description">
+                    Conversations are stored locally in this browser and are not sent to another service.
+                  </p>
+                </div>
+                <button class="delete-history-button" id="delete-history-button" type="button">Delete history</button>
+              </div>
+              <p class="history-status" id="history-status" role="status" aria-live="polite"></p>
+              <div class="recent-chat-list" id="recent-chat-list"></div>
+            </div>
+          </section>
+        </div>
+
+        <footer class="composer-area" id="composer-area">
+          <div class="composer-wrap">
+            <p class="status-message" id="status-message" role="status" aria-live="polite">Ready to record</p>
+            <div class="composer">
+              <label class="visually-hidden" for="question-input">Ask a textbook question</label>
+              <textarea
+                id="question-input"
+                name="question"
+                rows="1"
+                placeholder="Ask a question about Class 10 Science..."
+                aria-describedby="status-message request-status composer-note"
+              ></textarea>
+              <div class="composer-actions">
+                <span class="composer-hint" id="composer-note">English · textbook-grounded answers</span>
+                <div class="action-buttons">
+                  <button
+                    class="icon-button microphone-button"
+                    id="microphone-button"
+                    type="button"
+                    aria-label="Start speaking"
+                    aria-pressed="false"
+                    title="Start speaking in English"
+                  >
+                    <span class="microphone-icon" aria-hidden="true"></span>
+                    <span id="microphone-label" class="mic-label">Start Speaking</span>
+                  </button>
+                  <button class="send-button" id="submit-button" type="button" aria-label="Send question">
+                    <span aria-hidden="true">↑</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <p class="request-status" id="request-status" role="status" aria-live="polite"></p>
+            <p class="privacy-note">Answers are generated from your study material. Check textbook sources for details.</p>
+          </div>
+        </footer>
+      </main>
+    </div>
+  </body>
+</html>
