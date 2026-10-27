@@ -1,5 +1,9 @@
 "use strict";
 
+const API_BASE_URL = ["localhost", "127.0.0.1"].includes(window.location.hostname)
+  ? "http://127.0.0.1:8000"
+  : "https://studymate-ai-class10.onrender.com";
+
 const microphoneButton = document.getElementById("microphone-button");
 const microphoneLabel = document.getElementById("microphone-label");
 const questionInput = document.getElementById("question-input");
@@ -1776,11 +1780,11 @@ async function submitQuestion() {
     .slice(-6);
 
   try {
-    const response = await fetch("https://studymate-ai-class10.onrender.com/chat", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json"
-  },
+    const response = await fetch(`${API_BASE_URL}/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
       body: JSON.stringify({
         question,
         subject: selectedSubject,

@@ -13,6 +13,7 @@ from Tutor import (
     RERANKER_MODEL_NAME,
     SUBJECT_INDEX_PATHS,
     get_answer,
+    is_embedding_model_loaded,
 )
 
 
@@ -23,16 +24,22 @@ DEFAULT_CORS_ORIGINS = [
     "http://localhost:5500",
     "https://studymate-ai-class10-frontend.vercel.app",
 ]
-configured_origins = os.getenv("CORS_ORIGINS")
-CORS_ORIGINS = (
-    [
-        origin.strip().rstrip("/")
-        for origin in configured_origins.split(",")
-        if origin.strip()
-    ]
-    if configured_origins is not None
-    else DEFAULT_CORS_ORIGINS
-)
+
+
+def parse_cors_origins(configured_origins: str | None) -> list[str]:
+    origins = DEFAULT_CORS_ORIGINS.copy()
+    if configured_origins:
+        origins.extend(configured_origins.split(","))
+
+    normalized_origins = []
+    for origin in origins:
+        normalized = origin.strip().rstrip("/")
+        if normalized and normalized not in normalized_origins:
+            normalized_origins.append(normalized)
+    return normalized_origins
+
+
+CORS_ORIGINS = parse_cors_origins(os.getenv("CORS_ORIGINS"))
 
 SUBJECT_DISPLAY_NAMES = {
     "Science": "Science",
@@ -44,15 +51,6 @@ SUBJECT_ALIASES = {
     **{subject: subject for subject in SUBJECT_INDEX_PATHS},
     "Social Science": "Social_Science",
 }
-
-app = FastAPI(title="Class 10 AI Tutor API", version="1.0.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
-)
 
 
 class ChatMessage(BaseModel):
@@ -87,6 +85,140 @@ class AskResponse(BaseModel):
     answer: str
     sources: list[dict[str, Any]]
     session_id: str
+
+
+api = FastAPI(title="Class 10 AI Tutor API", version="1.0.0")
+
+
+@api.get("/")
+def root() -> dict[str, str]:
+    return {"status": "running", "message": "Class 10 AI Tutor backend is running."}
+
+
+@api.get("/health")
+def health() -> dict[str, Any]:
+    indexes = {
+        subject: index_is_available(subject)
+        for subject in SUBJECT_INDEX_PATHS
+    }
+    api_key_configured = bool(os.getenv("GROQ_API_KEY", "").strip())
+    embedding_loaded = is_embedding_model_loaded()
+    ready = (
+        api_key_configured
+        and all(indexes.values())
+        and embedding_loaded
+    )
+    return {
+        "status": "ok",
+        "ready": ready,
+        "readiness": "ready" if ready else "not_ready",
+        "configuration": {
+            "model": MODEL,
+            "reranker_model": RERANKER_MODEL_NAME,
+            "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+            "embedding_model_loaded": embedding_loaded,
+            "groq_api_key_configured": api_key_configured,
+            "indexes_available": indexes,
+            "cors_origins": CORS_ORIGINS,
+        },
+    }
+
+
+@api.get("/subjects")
+def subjects() -> dict[str, list[dict[str, Any]]]:
+    return {
+        "subjects": [
+            {
+                "id": subject,
+                "name": SUBJECT_DISPLAY_NAMES[subject],
+                "index_available": index_is_available(subject),
+            }
+            for subject in SUBJECT_INDEX_PATHS
+        ]
+    }
+
+
+@api.post("/chat", response_model=TutorResponse)
+def chat(request: ChatRequest) -> TutorResponse:
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="Question must not be empty.")
+
+    subject_id = normalize_subject(request.subject)
+    session_id = request.session_id.strip() if request.session_id else None
+    if request.session_id is not None and not session_id:
+        raise HTTPException(status_code=422, detail="Session ID must not be empty.")
+
+    history = [message.model_dump() for message in request.chat_history]
+    session_lock = get_session_lock(subject_id, session_id)
+    if session_lock is None:
+        result = run_tutor(question, subject_id, history)
+    else:
+        with session_lock:
+            result = run_tutor(question, subject_id, history)
+
+    if result.get("error"):
+        raise_tutor_error(result)
+
+    answer = result.get("answer")
+    if not isinstance(answer, str):
+        raise HTTPException(
+            status_code=502,
+            detail="The tutor did not receive an answer. Please try again.",
+        )
+
+    return TutorResponse(
+        answer=answer,
+        subject=SUBJECT_DISPLAY_NAMES[subject_id],
+        subject_id=subject_id,
+        sources=result.get("sources", []),
+        session_id=session_id,
+    )
+
+
+@api.post("/ask", response_model=AskResponse)
+def ask(request: AskRequest) -> AskResponse:
+    question = request.question.strip()
+    session_id = request.session_id.strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="Question must not be empty.")
+    if not session_id:
+        raise HTTPException(status_code=422, detail="Session ID must not be empty.")
+
+    subject_id = "Science"
+    session_history, session_lock = get_session_state(subject_id, session_id)
+    with session_lock:
+        result = run_tutor(question, subject_id, session_history)
+
+    if result.get("error"):
+        raise_tutor_error(result)
+
+    answer = result.get("answer")
+    if not isinstance(answer, str):
+        raise HTTPException(
+            status_code=502,
+            detail="The tutor did not receive an answer. Please try again.",
+        )
+
+    return AskResponse(
+        answer=answer,
+        sources=result.get("sources", []),
+        session_id=session_id,
+    )
+
+
+app = CORSMiddleware(
+    app=api,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=[
+        "Accept",
+        "Accept-Language",
+        "Content-Language",
+        "Content-Type",
+    ],
+)
 
 
 session_histories: dict[tuple[str, str], list[dict[str, str]]] = {}
@@ -170,6 +302,11 @@ def raise_tutor_error(result: dict[str, Any]) -> None:
             status_code=504,
             detail="The tutor did not receive a response in time. Please try again.",
         )
+    if error_type == "groq_rate_limited":
+        raise HTTPException(
+            status_code=503,
+            detail="The tutor is temporarily busy. Please try again shortly.",
+        )
     if error_type == "groq_failure":
         raise HTTPException(
             status_code=502,
@@ -185,115 +322,4 @@ def raise_tutor_error(result: dict[str, Any]) -> None:
     raise HTTPException(
         status_code=500,
         detail="The tutor could not process this question.",
-    )
-
-
-@app.get("/")
-def root() -> dict[str, str]:
-    return {"status": "running", "message": "Class 10 AI Tutor backend is running."}
-
-
-@app.get("/health")
-def health() -> dict[str, Any]:
-    indexes = {
-        subject: index_is_available(subject)
-        for subject in SUBJECT_INDEX_PATHS
-    }
-    api_key_configured = bool(
-        os.getenv("GROQ_API_KEY", "").strip()
-    )
-    is_healthy = api_key_configured and all(indexes.values())
-    return {
-        "status": "ok" if is_healthy else "degraded",
-        "configuration": {
-            "model": MODEL,
-            "reranker_model": RERANKER_MODEL_NAME,
-            "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
-            "groq_api_key_configured": api_key_configured,
-            "indexes_available": indexes,
-            "cors_origins": CORS_ORIGINS,
-        },
-    }
-
-
-@app.get("/subjects")
-def subjects() -> dict[str, list[dict[str, Any]]]:
-    return {
-        "subjects": [
-            {
-                "id": subject,
-                "name": SUBJECT_DISPLAY_NAMES[subject],
-                "index_available": index_is_available(subject),
-            }
-            for subject in SUBJECT_INDEX_PATHS
-        ]
-    }
-
-
-@app.post("/chat", response_model=TutorResponse)
-def chat(request: ChatRequest) -> TutorResponse:
-    question = request.question.strip()
-    if not question:
-        raise HTTPException(status_code=422, detail="Question must not be empty.")
-
-    subject_id = normalize_subject(request.subject)
-    session_id = request.session_id.strip() if request.session_id else None
-    if request.session_id is not None and not session_id:
-        raise HTTPException(status_code=422, detail="Session ID must not be empty.")
-
-    history = [message.model_dump() for message in request.chat_history]
-    session_lock = get_session_lock(subject_id, session_id)
-    if session_lock is None:
-        result = run_tutor(question, subject_id, history)
-    else:
-        with session_lock:
-            result = run_tutor(question, subject_id, history)
-
-    if result.get("error"):
-        raise_tutor_error(result)
-
-    answer = result.get("answer")
-    if not isinstance(answer, str):
-        raise HTTPException(
-            status_code=502,
-            detail="The tutor did not receive an answer. Please try again.",
-        )
-
-    return TutorResponse(
-        answer=answer,
-        subject=SUBJECT_DISPLAY_NAMES[subject_id],
-        subject_id=subject_id,
-        sources=result.get("sources", []),
-        session_id=session_id,
-    )
-
-
-@app.post("/ask", response_model=AskResponse)
-def ask(request: AskRequest) -> AskResponse:
-    question = request.question.strip()
-    session_id = request.session_id.strip()
-    if not question:
-        raise HTTPException(status_code=422, detail="Question must not be empty.")
-    if not session_id:
-        raise HTTPException(status_code=422, detail="Session ID must not be empty.")
-
-    subject_id = "Science"
-    session_history, session_lock = get_session_state(subject_id, session_id)
-    with session_lock:
-        result = run_tutor(question, subject_id, session_history)
-
-    if result.get("error"):
-        raise_tutor_error(result)
-
-    answer = result.get("answer")
-    if not isinstance(answer, str):
-        raise HTTPException(
-            status_code=502,
-            detail="The tutor did not receive an answer. Please try again.",
-        )
-
-    return AskResponse(
-        answer=answer,
-        sources=result.get("sources", []),
-        session_id=session_id,
     )

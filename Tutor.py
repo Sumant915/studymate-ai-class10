@@ -1,144 +1,123 @@
-from langchain_community.vectorstores import FAISS
-from functools import lru_cache
 import os
-import time
-import random
+from threading import Lock
+
 import requests
 from dotenv import load_dotenv
+from langchain_community.vectorstores import FAISS
 
 load_dotenv()
 
-# ---------------- CONFIGURATION ----------------
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 INDEX_PATH = os.path.join(BASE_DIR, "faiss_index")
-
 SUBJECT_INDEX_PATHS = {
     "Science": INDEX_PATH,
     "English": os.path.join(BASE_DIR, "faiss_indexes", "English"),
     "Maths": os.path.join(BASE_DIR, "faiss_indexes", "Maths"),
     "Social_Science": os.path.join(
         BASE_DIR, "faiss_indexes", "Social_Science"
-    )
+    ),
 }
 
 MODEL = "openai/gpt-oss-120b"
-
-
-# ---------------- EMBEDDING MODEL ----------------
-
-@lru_cache(maxsize=1)
-def get_embeddings():
-    from langchain_huggingface import HuggingFaceEmbeddings
-
-    print("Loading embedding model...")
-
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"batch_size": 8},
-    )
-
-# ---------------- RERANKER ----------------
-
-# Cross-Encoder scores a question and a candidate passage together.
-# The model is loaded lazily on the first question and then cached.
-# RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-# reranker = None
-
-
-# def get_reranker():
-#     global reranker
-
-#     if reranker is None:
-#         print("Loading Cross-Encoder reranker (first run may download model weights)...")
-#         reranker = CrossEncoder(RERANKER_MODEL_NAME)
-#         print("Cross-Encoder reranker loaded successfully!")
-
-#     return reranker
 RERANKER_MODEL_NAME = "disabled (memory optimization)"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# ---------------- SUBJECT INDEX MANAGEMENT ----------------
-
-# Cache loaded indexes so they do not need to be loaded repeatedly.
+_embeddings = None
+_embeddings_lock = Lock()
+_retrieval_lock = Lock()
 vectorstores = {}
-
-
-def get_vectorstore(subject="Science"):
-
-    if subject not in SUBJECT_INDEX_PATHS:
-        raise ValueError(f"Unsupported subject: {subject}")
-
-    if subject not in vectorstores:
-
-        index_path = SUBJECT_INDEX_PATHS[subject]
-
-        if not os.path.exists(
-            os.path.join(index_path, "index.faiss")
-        ):
-            raise FileNotFoundError(
-                f"FAISS index not found for {subject}: {index_path}"
-            )
-
-        print(f"Loading {subject} FAISS index...")
-
-        vectorstores[subject] = FAISS.load_local(
-            index_path,
-            get_embeddings(),
-            allow_dangerous_deserialization=True
-        )
-
-        print(f"{subject} FAISS index loaded successfully!")
-
-    return vectorstores[subject]
-
-
-# ---------------- CONVERSATION MEMORY ----------------
+_vectorstore_locks = {
+    subject: Lock()
+    for subject in SUBJECT_INDEX_PATHS
+}
 
 # Default history for CLI usage.
 chat_history = []
 
 
-# ---------------- GROQ API ----------------
+def get_groq_headers() -> dict[str, str] | None:
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not api_key:
+        return None
 
-url = "https://api.groq.com/openai/v1/chat/completions"
-
-# Set GROQ_API_KEY in your environment before running this file.
-API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-
-headers = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json"
-}
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
 
-# ---------------- REWRITE FOLLOW-UP QUESTION ----------------
+def get_embeddings():
+    global _embeddings
 
-def rewrite_question(question, chat_history):
+    with _embeddings_lock:
+        if _embeddings is not None:
+            return _embeddings
 
-    if not chat_history:
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+
+        from langchain_huggingface import HuggingFaceEmbeddings
+
+        print("Loading embedding model...")
+        _embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"batch_size": 1},
+        )
+        return _embeddings
+
+
+def is_embedding_model_loaded() -> bool:
+    return _embeddings is not None
+
+
+def get_vectorstore(subject: str = "Science"):
+    if subject not in SUBJECT_INDEX_PATHS:
+        raise ValueError(f"Unsupported subject: {subject}")
+
+    with _vectorstore_locks[subject]:
+        if subject in vectorstores:
+            return vectorstores[subject]
+
+        index_path = SUBJECT_INDEX_PATHS[subject]
+        required_files = ("index.faiss", "index.pkl")
+        if not all(
+            os.path.isfile(os.path.join(index_path, filename))
+            for filename in required_files
+        ):
+            raise FileNotFoundError(
+                f"FAISS index files are not available for {subject}: {index_path}"
+            )
+
+        print(f"Loading {subject} FAISS index...")
+        vectorstore = FAISS.load_local(
+            index_path,
+            get_embeddings(),
+            allow_dangerous_deserialization=True,
+        )
+        vectorstores[subject] = vectorstore
+        print(f"{subject} FAISS index loaded successfully!")
+        return vectorstore
+
+
+def rewrite_question(question: str, history: list[dict[str, str]]) -> str:
+    if not history:
         return question
 
-    history_text = ""
+    headers = get_groq_headers()
+    if headers is None:
+        return question
 
-    for chat in chat_history[-6:]:
-        history_text += f"{chat['role']}: {chat['content']}\n"
-
+    history_text = "\n".join(
+        f"{message['role']}: {message['content']}"
+        for message in history[-6:]
+    )
     rewrite_prompt = f"""
 You rewrite student questions for a textbook search system.
-
-Use the conversation history to understand the current question.
-
-Rules:
-- Rewrite the current question as a standalone search query.
-- Resolve references like "it", "this", "that", and "explain more".
-- Preserve the student's original intent.
-- Do not answer the question.
-- Do not add new topics or unsupported details.
-- If the question already stands alone or changes topic, keep its
-  meaning unchanged.
-- Return only the rewritten question, without explanations.
+Use conversation history to understand the current question.
+Rewrite it as a standalone search query, resolving references such as "it",
+"this", "that", or "explain more". Preserve the student's intent, do not
+answer the question, and return only the rewritten query.
 
 Conversation History:
 {history_text}
@@ -148,150 +127,93 @@ Current Question:
 
 Standalone Search Query:
 """
-
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {"role": "user", "content": rewrite_prompt}
-        ],
-        "temperature": 0,
-        "max_completion_tokens": 150
-    }
-
     try:
         response = requests.post(
-            url,
+            GROQ_URL,
             headers=headers,
-            json=payload,
-            timeout=30
+            json={
+                "model": MODEL,
+                "messages": [{"role": "user", "content": rewrite_prompt}],
+                "temperature": 0,
+                "max_completion_tokens": 150,
+            },
+            timeout=(3, 8),
         )
-
         if response.status_code == 200:
-            result = response.json()
             rewritten = (
-                result["choices"][0]["message"]["content"].strip()
+                response.json()["choices"][0]["message"]["content"].strip()
             )
-
             if rewritten:
-                print("\nRewritten Search Query:", rewritten)
                 return rewritten
-
     except requests.RequestException as error:
         print("Question rewriting failed:", error)
+    except (ValueError, KeyError, IndexError, TypeError):
+        print("Question rewriting returned an invalid response.")
 
-    print("Using original question for retrieval.")
     return question
 
 
-# ---------------- GET ANSWER ----------------
+def _failure(message: str, error_type: str) -> dict:
+    return {
+        "answer": None,
+        "sources": [],
+        "error": message,
+        "error_type": error_type,
+    }
 
-def get_answer(question, chat_history, subject="Science"):
 
-    if not headers.get("Authorization", "").removeprefix("Bearer ").strip():
-        return {
-            "answer": None,
-            "sources": [],
-            "error": "Groq API authorization is not configured.",
-            "error_type": "configuration"
-        }
-
-    # ---------------- VALIDATE SUBJECT ----------------
+def get_answer(
+    question: str,
+    chat_history: list[dict[str, str]],
+    subject: str = "Science",
+) -> dict:
+    headers = get_groq_headers()
+    if headers is None:
+        return _failure(
+            "Groq API authorization is not configured.",
+            "configuration",
+        )
 
     if subject not in SUBJECT_INDEX_PATHS:
-        return {
-            "answer": None,
-            "sources": [],
-            "error": f"Unsupported subject: {subject}",
-            "error_type": "unsupported_subject"
-        }
+        return _failure(f"Unsupported subject: {subject}", "unsupported_subject")
 
-    # ---------------- BUILD CONVERSATION HISTORY ----------------
-
-    history_text = ""
-
-    for chat in chat_history[-6:]:
-        history_text += f"{chat['role']}: {chat['content']}\n"
-
-    # ---------------- REWRITE QUESTION ----------------
-
+    history_text = "\n".join(
+        f"{message['role']}: {message['content']}"
+        for message in chat_history[-6:]
+    )
     search_query = rewrite_question(question, chat_history)
 
-    # ---------------- RETRIEVE RELEVANT CHUNKS USING MMR ----------------
-
-        # ---------------- MEMORY-EFFICIENT RETRIEVAL ----------------
-
     try:
-        selected_vectorstore = get_vectorstore(subject)
-
-        # Retrieve fewer chunks to reduce temporary memory usage.
-        retrieved_docs = selected_vectorstore.max_marginal_relevance_search(
-            search_query,
-            k=5,
-            fetch_k=10,
-            lambda_mult=0.5,
+        with _retrieval_lock:
+            vectorstore = get_vectorstore(subject)
+            retrieved_docs = vectorstore.max_marginal_relevance_search(
+                search_query,
+                k=5,
+                fetch_k=10,
+                lambda_mult=0.5,
+            )
+    except FileNotFoundError as error:
+        return _failure(str(error), "index_unavailable")
+    except Exception as error:
+        return _failure(
+            f"Textbook retrieval failed. Details: {error}",
+            "retrieval",
         )
 
-        print(
-            f"Retrieved {len(retrieved_docs)} chunks for {subject} "
-            "without Cross-Encoder reranking."
-        )
-
-    except FileNotFoundError as error:
-        return {
-            "answer": None,
-            "sources": [],
-            "error": str(error),
-            "error_type": "index_unavailable",
-        }
-
-    except Exception as error:
-        return {
-            "answer": None,
-            "sources": [],
-            "error": (
-                "Textbook retrieval failed. "
-                f"Details: {error}"
-            ),
-            "error_type": "retrieval",
-        }
-    except FileNotFoundError as error:
-        return {
-            "answer": None,
-            "sources": [],
-            "error": str(error),
-            "error_type": "index_unavailable"
-        }
-    except Exception as error:
-        return {
-            "answer": None,
-            "sources": [],
-            "error": (
-                "Retrieval/reranking failed. Check the reranker model download "
-                f"and installed packages. Details: {error}"
-            ),
-            "error_type": "retrieval"
-        }
-
-    # ---------------- BUILD CONTEXT AND SOURCES ----------------
-
-    actual_result = []
     sources = []
-
+    context = []
     for doc in retrieved_docs:
         pdf_name = doc.metadata.get("pdf_name", "Unknown PDF")
-
         page = doc.metadata.get(
             "page_label",
-            doc.metadata.get("page", "Unknown")
+            doc.metadata.get("page", "Unknown"),
         )
-
         source = {
             "pdf_name": pdf_name,
             "page": page,
             "subject": doc.metadata.get("subject", subject),
-            "source_text": doc.page_content
+            "source_text": doc.page_content,
         }
-
         chapter = doc.metadata.get("chapter")
         if chapter is not None:
             source["chapter"] = chapter
@@ -303,29 +225,18 @@ def get_answer(question, chat_history, subject="Science"):
                 if existing["pdf_name"] == pdf_name
                 and existing["page"] == page
             ),
-            None
+            None,
         )
         if existing_source is None:
             sources.append(source)
         elif doc.page_content not in existing_source["source_text"].split("\n\n"):
             existing_source["source_text"] += f"\n\n{doc.page_content}"
 
-        actual_result.append(
-            f"Source: {pdf_name}, Page: {page}\n"
-            f"Content: {doc.page_content}"
+        context.append(
+            f"Source: {pdf_name}, Page: {page}\nContent: {doc.page_content}"
         )
 
-    actual_result = "\n\n".join(actual_result)
-
-    print("\n========== RETRIEVED CONTEXT ==========\n")
-    print(actual_result)
-    print("\n========== END OF CONTEXT ==========\n")
-
-
-    # ---------------- BUILD SUBJECT-AWARE PROMPT ----------------
-
     subject_name = subject.replace("_", " ")
-
     prompt = f"""
 You are an expert Class 10 {subject_name} AI Tutor designed to help
 students understand their textbook concepts clearly and accurately.
@@ -338,12 +249,8 @@ students understand their textbook concepts clearly and accurately.
   "I could not find sufficient information in the provided books."
 - If only part of the question is answerable, answer that part
   and state what information is missing.
-- Do not claim information is absent from the entire book merely
-  because it is missing from the retrieved passages.
---Distinguish explicitly stated textbook facts from interpretations and inferences. 
-  When the textbook poses an open-ended question without giving a definitive answer, 
-   explain that the meaning is interpretive. Never present an inference as an explicit 
- textbook conclusion. Cite only retrieved passages that support the claim.
+- Distinguish explicitly stated textbook facts from interpretations and
+  inferences. Never present an inference as an explicit textbook conclusion.
 
 ## Follow-up Questions
 - Resolve references such as "it", "this", "that", "why",
@@ -363,6 +270,7 @@ students understand their textbook concepts clearly and accurately.
 - Cite the PDF name and page number provided in the context.
 - Never invent citations.
 - Clearly state when requested information is missing.
+
 ## Selected Subject
 {subject_name}
 
@@ -370,129 +278,72 @@ students understand their textbook concepts clearly and accurately.
 {history_text}
 
 ## Retrieved Textbook Context
-{actual_result}
+{"\n\n".join(context)}
 
 ## Current Student Question
 {question}
 
-Before answering, verify that factual claims are supported
-by the retrieved context and that citations are accurate.
+Before answering, verify that factual claims are supported by the retrieved
+context and that citations are accurate.
 
 Answer:
 """
-
-    # ---------------- PREPARE GROQ REQUEST ----------------
-
-    payload = {
-        "model": MODEL,
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.3,
-        "max_completion_tokens": 2048
-    }
-
-    # ---------------- GENERATE ANSWER ----------------
-
-    answer = None
-    error_type = "groq_failure"
-
-    for attempt in range(5):
-
-        try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=60
+    try:
+        response = requests.post(
+            GROQ_URL,
+            headers=headers,
+            json={
+                "model": MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+                "max_completion_tokens": 2048,
+            },
+            timeout=(3, 18),
+        )
+        if response.status_code != 200:
+            print("Groq API returned status:", response.status_code)
+            if response.status_code in (401, 403):
+                return _failure(
+                    "Groq API authorization failed.",
+                    "configuration",
+                )
+            if response.status_code == 429:
+                return _failure(
+                    "Groq is temporarily rate limited.",
+                    "groq_rate_limited",
+                )
+            if response.status_code == 504:
+                return _failure("Groq request timed out.", "groq_timeout")
+            return _failure(
+                "Groq did not return an answer.",
+                "groq_failure",
             )
 
-            if response.status_code == 200:
+        answer = response.json()["choices"][0]["message"]["content"]
+        if not isinstance(answer, str) or not answer.strip():
+            return _failure("Groq returned an empty answer.", "groq_failure")
+    except requests.Timeout as error:
+        print("Groq request timed out:", error)
+        return _failure("Groq request timed out.", "groq_timeout")
+    except requests.RequestException as error:
+        print("Groq request failed:", error)
+        return _failure("Groq request failed.", "groq_failure")
+    except (ValueError, KeyError, IndexError, TypeError):
+        print("Groq returned an invalid response.")
+        return _failure("Groq returned an invalid response.", "groq_failure")
 
-                api_result = response.json()
-                answer = (
-                    api_result["choices"][0]["message"]["content"]
-                )
+    chat_history.extend(
+        [
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": answer},
+        ]
+    )
+    del chat_history[:-6]
 
-                break
+    return {"answer": answer, "sources": sources}
 
-            if response.status_code in (429, 500, 502, 503, 504):
-
-                if attempt == 4:
-                    print("Groq API Error:", response.status_code)
-                    print(response.text)
-                    if response.status_code == 504:
-                        error_type = "groq_timeout"
-                    break
-
-                delay = min(2 ** attempt, 16) + random.uniform(0, 1)
-
-                print(f"Retrying in {delay:.1f} seconds...")
-                time.sleep(delay)
-                continue
-
-            print("Groq API Error:", response.status_code)
-            print(response.text)
-            if response.status_code in (401, 403):
-                error_type = "configuration"
-            break
-
-        except requests.Timeout as error:
-
-            if attempt == 4:
-                print("Request failed:", error)
-                error_type = "groq_timeout"
-                break
-
-            delay = min(2 ** attempt, 16)
-            print(f"Request failed. Retrying in {delay} seconds...")
-            time.sleep(delay)
-
-        except requests.RequestException as error:
-
-            if attempt == 4:
-                print("Request failed:", error)
-                break
-
-            delay = min(2 ** attempt, 16)
-            print(f"Request failed. Retrying in {delay} seconds...")
-            time.sleep(delay)
-
-    # ---------------- SAVE CONVERSATION ----------------
-
-    if answer is not None:
-
-        chat_history.append({
-            "role": "user",
-            "content": question
-        })
-
-        chat_history.append({
-            "role": "assistant",
-            "content": answer
-        })
-
-        # Keep only the latest 6 messages.
-        chat_history[:] = chat_history[-6:]
-
-    return {
-        "answer": answer,
-        "sources": sources,
-        **(
-            {
-                "error": "Groq did not return an answer.",
-                "error_type": error_type
-            }
-            if answer is None
-            else {}
-        )
-    }
-
-
-# ---------------- COMMAND LINE INTERFACE ----------------
 
 def main():
-
     print("Available subjects:")
     print("1. Science")
     print("2. Maths")
@@ -503,51 +354,30 @@ def main():
         "1": "Science",
         "2": "Maths",
         "3": "English",
-        "4": "Social_Science"
+        "4": "Social_Science",
     }
-
     choice = input("Select subject (1-4): ").strip()
-
     if choice not in subject_options:
         print("Invalid subject selection.")
         return
 
     selected_subject = subject_options[choice]
-
     while True:
-
         question = input(
             f"\n[{selected_subject}] What is your doubt? "
             "(type 'exit' to quit): "
         ).strip()
-
         if question.lower() in ["exit", "quit", "bye"]:
             print("AI Tutor: Goodbye!")
             break
-
         if not question:
             continue
 
-        result = get_answer(
-            question,
-            chat_history,
-            subject=selected_subject
-        )
-
+        result = get_answer(question, chat_history, subject=selected_subject)
         if result.get("error"):
             print(result["error"])
             continue
-
-        print("\nRetrieved Sources:")
-
-        for source in result["sources"]:
-            print(
-                f"- {source['pdf_name']} | Page: {source['page']}"
-            )
-
-        if result["answer"] is not None:
-            print("\nAI Tutor:\n")
-            print(result["answer"])
+        print("AI Tutor:", result["answer"])
 
 
 if __name__ == "__main__":

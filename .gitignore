@@ -1,7 +1,11 @@
 .env
+.env.*
+!.env.example
 for_tutor/
 .venv/
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
 .vscode/settings.json
