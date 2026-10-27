@@ -1,8 +1,5 @@
-
 from langchain_community.vectorstores import FAISS
-from langchain_huggingface import HuggingFaceEmbeddings
-from sentence_transformers import CrossEncoder
-
+from functools import lru_cache
 import os
 import time
 import random
@@ -31,29 +28,36 @@ MODEL = "openai/gpt-oss-120b"
 
 # ---------------- EMBEDDING MODEL ----------------
 
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
+@lru_cache(maxsize=1)
+def get_embeddings():
+    from langchain_huggingface import HuggingFaceEmbeddings
 
+    print("Loading embedding model...")
+
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"batch_size": 8},
+    )
 
 # ---------------- RERANKER ----------------
 
 # Cross-Encoder scores a question and a candidate passage together.
 # The model is loaded lazily on the first question and then cached.
-RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-reranker = None
+# RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+# reranker = None
 
 
-def get_reranker():
-    global reranker
+# def get_reranker():
+#     global reranker
 
-    if reranker is None:
-        print("Loading Cross-Encoder reranker (first run may download model weights)...")
-        reranker = CrossEncoder(RERANKER_MODEL_NAME)
-        print("Cross-Encoder reranker loaded successfully!")
+#     if reranker is None:
+#         print("Loading Cross-Encoder reranker (first run may download model weights)...")
+#         reranker = CrossEncoder(RERANKER_MODEL_NAME)
+#         print("Cross-Encoder reranker loaded successfully!")
 
-    return reranker
-
+#     return reranker
+RERANKER_MODEL_NAME = "disabled (memory optimization)"
 
 # ---------------- SUBJECT INDEX MANAGEMENT ----------------
 
@@ -81,7 +85,7 @@ def get_vectorstore(subject="Science"):
 
         vectorstores[subject] = FAISS.load_local(
             index_path,
-            embeddings,
+            get_embeddings(),
             allow_dangerous_deserialization=True
         )
 
@@ -214,66 +218,42 @@ def get_answer(question, chat_history, subject="Science"):
 
     # ---------------- RETRIEVE RELEVANT CHUNKS USING MMR ----------------
 
+        # ---------------- MEMORY-EFFICIENT RETRIEVAL ----------------
+
     try:
         selected_vectorstore = get_vectorstore(subject)
 
-        # Stage 1: MMR retrieves a diverse candidate pool.
-        # We retrieve more than 5 candidates so the reranker has options.
-        candidate_docs = selected_vectorstore.max_marginal_relevance_search(
+        # Retrieve fewer chunks to reduce temporary memory usage.
+        retrieved_docs = selected_vectorstore.max_marginal_relevance_search(
             search_query,
-            k=15,
-            fetch_k=30,
-            lambda_mult=0.5
+            k=5,
+            fetch_k=10,
+            lambda_mult=0.5,
         )
 
-        # Remove duplicate candidates before reranking.
-        unique_docs = []
-        seen_chunks = set()
-
-        for doc in candidate_docs:
-            chunk_key = (
-                doc.metadata.get("pdf_name", ""),
-                doc.metadata.get("page", doc.metadata.get("page_label", "")),
-                doc.page_content.strip()
-            )
-
-            if chunk_key not in seen_chunks:
-                seen_chunks.add(chunk_key)
-                unique_docs.append(doc)
-
-        candidate_docs = unique_docs
-        print(f"\nMMR retrieved {len(candidate_docs)} candidate chunks for {subject}.")
-
-        # Stage 2: Cross-Encoder scores each (question, passage) pair.
-        # Higher scores indicate stronger relevance according to this model.
-        active_reranker = get_reranker()
-        query_passage_pairs = [
-            (search_query, doc.page_content)
-            for doc in candidate_docs
-        ]
-        relevance_scores = active_reranker.predict(query_passage_pairs)
-
-        ranked_results = sorted(
-            zip(candidate_docs, relevance_scores),
-            key=lambda item: float(item[1]),
-            reverse=True
+        print(
+            f"Retrieved {len(retrieved_docs)} chunks for {subject} "
+            "without Cross-Encoder reranking."
         )
 
-        # Keep the top 5 reranked chunks for the final LLM context.
-        retrieved_docs = [doc for doc, score in ranked_results[:5]]
+    except FileNotFoundError as error:
+        return {
+            "answer": None,
+            "sources": [],
+            "error": str(error),
+            "error_type": "index_unavailable",
+        }
 
-        print("\nTop reranked chunks:")
-        for rank, (doc, score) in enumerate(ranked_results[:5], start=1):
-            pdf_name = doc.metadata.get("pdf_name", "Unknown PDF")
-            page = doc.metadata.get(
-                "page_label",
-                doc.metadata.get("page", "Unknown")
-            )
-            print(
-                f"{rank}. score={float(score):.4f} | "
-                f"{pdf_name} | Page: {page}"
-            )
-
+    except Exception as error:
+        return {
+            "answer": None,
+            "sources": [],
+            "error": (
+                "Textbook retrieval failed. "
+                f"Details: {error}"
+            ),
+            "error_type": "retrieval",
+        }
     except FileNotFoundError as error:
         return {
             "answer": None,
