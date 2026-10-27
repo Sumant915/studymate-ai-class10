@@ -21,10 +21,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_CORS_ORIGINS = [
     "http://127.0.0.1:5500",
     "http://localhost:5500",
+    "https://studymate-ai-class10-frontend.vercel.app",
 ]
 configured_origins = os.getenv("CORS_ORIGINS")
 CORS_ORIGINS = (
-    [origin.strip() for origin in configured_origins.split(",") if origin.strip()]
+    [
+        origin.strip().rstrip("/")
+        for origin in configured_origins.split(",")
+        if origin.strip()
+    ]
     if configured_origins is not None
     else DEFAULT_CORS_ORIGINS
 )
